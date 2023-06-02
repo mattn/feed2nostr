@@ -36,7 +36,7 @@ type Feed2Nostr struct {
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
 }
 
-func postNostr(nsec string, content string) error {
+func postNostr(nsec string, rs []string, content string) error {
 	ev := nostr.Event{}
 	var sk string
 	if _, s, err := nip19.Decode(nsec); err != nil {
@@ -67,8 +67,7 @@ func postNostr(nsec string, content string) error {
 
 	success := 0
 	ctx := context.Background()
-	for _, r := range strings.Split(os.Getenv("FEED2NOSTR_RELAYS"), ",") {
-		r = strings.TrimSpace(r)
+	for _, r := range rs {
 		relay, err := nostr.RelayConnect(context.Background(), r)
 		if err != nil {
 			log.Printf("%v: %v", r, err)
@@ -92,6 +91,8 @@ func main() {
 	var feedURL string
 	var format string
 	var nsec string
+	var relays string
+	var rs []string
 	var ver bool
 
 	flag.BoolVar(&skip, "skip", false, "Skip post")
@@ -99,12 +100,20 @@ func main() {
 	flag.StringVar(&feedURL, "feed", "", "Feed URL")
 	flag.StringVar(&format, "format", "{{.Title}}\n{{.Link}}", "Post Format")
 	flag.StringVar(&nsec, "nsec", os.Getenv("FEED2NOSTR_NSEC"), "Nostr nsec")
+	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays")
 	flag.BoolVar(&ver, "v", false, "show version")
 	flag.Parse()
 
 	if ver {
 		fmt.Println(version)
 		os.Exit(0)
+	}
+
+	for _, r := range strings.Split(relays, ",") {
+		rs = append(rs, strings.TrimSpace(r))
+	}
+	if len(rs) == 0 {
+		log.Fatal("must specify relays")
 	}
 
 	t := template.Must(template.New("").Parse(format))
@@ -156,7 +165,7 @@ func main() {
 			log.Printf("%q", buf.String())
 			continue
 		}
-		err = postNostr(nsec, buf.String())
+		err = postNostr(nsec, rs, buf.String())
 		if err != nil {
 			log.Println(err)
 			continue
