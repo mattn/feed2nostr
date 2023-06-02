@@ -57,7 +57,7 @@ func postNostr(nsec string, content string) error {
 	ev.Kind = nostr.KindTextNote
 	ev.Tags = nostr.Tags{}
 	hashtag := nostr.Tag{"h"}
-	for _, m := range regexp.MustCompile(`#[a-zA-Z0-9]+`).FindAllStringSubmatchIndex(ev.Content, -1) {
+	for _, m := range regexp.MustCompile(`#[^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+`).FindAllStringSubmatchIndex(ev.Content, -1) {
 		hashtag = append(hashtag, ev.Content[m[0]+1:m[1]])
 	}
 	if len(hashtag) > 1 {
