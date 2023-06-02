@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -55,6 +56,13 @@ func postNostr(nsec string, content string) error {
 	ev.CreatedAt = nostr.Now()
 	ev.Kind = nostr.KindTextNote
 	ev.Tags = nostr.Tags{}
+	hashtag := nostr.Tag{"h"}
+	for _, m := range regexp.MustCompile(`#[a-zA-Z0-9]+`).FindAllStringSubmatchIndex(ev.Content, -1) {
+		hashtag = append(hashtag, ev.Content[m[0]+1:m[1]])
+	}
+	if len(hashtag) > 1 {
+		ev.Tags = ev.Tags.AppendUnique(hashtag)
+	}
 	ev.Sign(sk)
 
 	success := 0
