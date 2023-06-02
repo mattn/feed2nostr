@@ -28,7 +28,7 @@ spec:
         spec:
           containers:
           - name: golang_news-bot
-            image: mattn/feed2witter
+            image: mattn/feed2nostr
             imagePullPolicy: IfNotPresent
             #imagePullPolicy: Always
             command: ["/go/bin/feed2nostr"]
