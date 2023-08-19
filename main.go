@@ -36,7 +36,7 @@ type Feed2Nostr struct {
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
 }
 
-func postNostr(nsec string, rs []string, content string) error {
+func postNostr(nsec string, rs []string, link string, content string) error {
 	ev := nostr.Event{}
 	var sk string
 	if _, s, err := nip19.Decode(nsec); err != nil {
@@ -56,6 +56,7 @@ func postNostr(nsec string, rs []string, content string) error {
 	ev.CreatedAt = nostr.Now()
 	ev.Kind = nostr.KindTextNote
 	ev.Tags = nostr.Tags{}
+	ev.Tags.AppendUnique(nostr.Tag{"proxy", link, "rss"})
 	hashtag := nostr.Tag{"h"}
 	for _, m := range regexp.MustCompile(`#[^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+`).FindAllStringSubmatchIndex(ev.Content, -1) {
 		hashtag = append(hashtag, ev.Content[m[0]+1:m[1]])
@@ -165,7 +166,7 @@ func main() {
 			log.Printf("%q", buf.String())
 			continue
 		}
-		err = postNostr(nsec, rs, buf.String())
+		err = postNostr(nsec, rs, item.Link, buf.String())
 		if err != nil {
 			log.Println(err)
 			continue
