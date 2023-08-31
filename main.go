@@ -57,13 +57,12 @@ func postNostr(nsec string, rs []string, link string, content string) error {
 	ev.Kind = nostr.KindTextNote
 	ev.Tags = nostr.Tags{}
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"proxy", link, "rss"})
-	hashtag := nostr.Tag{"h"}
+
 	for _, m := range regexp.MustCompile(`#[^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+`).FindAllStringSubmatchIndex(ev.Content, -1) {
-		hashtag = append(hashtag, ev.Content[m[0]+1:m[1]])
-	}
-	if len(hashtag) > 1 {
+		hashtag := nostr.Tag{"t", ev.Content[m[0]+1 : m[1]]}
 		ev.Tags = ev.Tags.AppendUnique(hashtag)
 	}
+
 	ev.Sign(sk)
 
 	success := 0
