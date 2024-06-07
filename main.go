@@ -92,6 +92,8 @@ func main() {
 	var format string
 	var nsec string
 	var relays string
+	var pattern string
+	var re *regexp.Regexp
 	var rs []string
 	var ver bool
 
@@ -101,12 +103,21 @@ func main() {
 	flag.StringVar(&format, "format", "{{.Title}}\n{{.Link}}", "Post Format")
 	flag.StringVar(&nsec, "nsec", os.Getenv("FEED2NOSTR_NSEC"), "Nostr nsec")
 	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays")
+	flag.StringVar(&pattern, "pattern", "", "Match pattern")
 	flag.BoolVar(&ver, "v", false, "show version")
 	flag.Parse()
 
 	if ver {
 		fmt.Println(version)
 		os.Exit(0)
+	}
+
+	var err error
+	if pattern != "" {
+		re, err = regexp.Compile(pattern)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	for _, r := range strings.Split(relays, ",") {
@@ -161,10 +172,18 @@ func main() {
 			log.Println(err)
 			continue
 		}
+
+		if re != nil {
+			if !re.MatchString(buf.String()) {
+				continue
+			}
+		}
+
 		if skip {
 			log.Printf("%q", buf.String())
 			continue
 		}
+
 		err = postNostr(nsec, rs, item.Link, buf.String())
 		if err != nil {
 			log.Println(err)
