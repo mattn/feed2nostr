@@ -90,10 +90,10 @@ func main() {
 	var dsn string
 	var feedURL string
 	var format string
-	var nsec string
-	var relays string
 	var pattern string
 	var re *regexp.Regexp
+	var nsec string
+	var relays string
 	var rs []string
 	var ver bool
 
@@ -101,9 +101,9 @@ func main() {
 	flag.StringVar(&dsn, "dsn", os.Getenv("FEED2NOSTR_DSN"), "Database source")
 	flag.StringVar(&feedURL, "feed", "", "Feed URL")
 	flag.StringVar(&format, "format", "{{.Title}}\n{{.Link}}", "Post Format")
+	flag.StringVar(&pattern, "pattern", "", "Match pattern")
 	flag.StringVar(&nsec, "nsec", os.Getenv("FEED2NOSTR_NSEC"), "Nostr nsec")
 	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays")
-	flag.StringVar(&pattern, "pattern", "", "Match pattern")
 	flag.BoolVar(&ver, "v", false, "show version")
 	flag.Parse()
 
@@ -120,13 +120,6 @@ func main() {
 		}
 	}
 
-	for _, r := range strings.Split(relays, ",") {
-		rs = append(rs, strings.TrimSpace(r))
-	}
-	if len(rs) == 0 {
-		log.Fatal("must specify relays")
-	}
-
 	t := template.Must(template.New("").Parse(format))
 
 	db, err := sql.Open("postgres", dsn)
@@ -141,6 +134,13 @@ func main() {
 	if err != nil {
 		log.Println(err)
 		return
+	}
+
+	for _, r := range strings.Split(relays, ",") {
+		rs = append(rs, strings.TrimSpace(r))
+	}
+	if len(rs) == 0 {
+		log.Fatal("must specify relays")
 	}
 
 	feed, err := gofeed.NewParser().ParseURL(feedURL)
