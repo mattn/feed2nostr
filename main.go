@@ -73,9 +73,9 @@ func postNostr(nsec string, rs []string, link string, content string) error {
 			log.Printf("%v: %v", r, err)
 			continue
 		}
-		status, err := relay.Publish(ctx, ev)
+		err = relay.Publish(ctx, ev)
 		relay.Close()
-		if err == nil && status != nostr.PublishStatusFailed {
+		if err == nil {
 			success++
 		}
 	}
