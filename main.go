@@ -120,7 +120,12 @@ func main() {
 		}
 	}
 
-	t := template.Must(template.New("").Parse(format))
+	funcMap := template.FuncMap{
+		"squeezeNewlines": func(s string) string {
+			return regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
+		},
+	}
+	t := template.Must(template.New("").Funcs(funcMap).Parse(format))
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
