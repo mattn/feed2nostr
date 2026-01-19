@@ -100,7 +100,7 @@ func main() {
 	flag.BoolVar(&skip, "skip", false, "Skip post")
 	flag.StringVar(&dsn, "dsn", os.Getenv("FEED2NOSTR_DSN"), "Database source")
 	flag.StringVar(&feedURL, "feed", "", "Feed URL")
-	flag.StringVar(&format, "format", "{{.Title}}\n{{.Link}}", "Post Format")
+	flag.StringVar(&format, "format", "{{.Title | normalize}}\n{{.Link}}", "Post Format")
 	flag.StringVar(&pattern, "pattern", "", "Match pattern")
 	flag.StringVar(&nsec, "nsec", os.Getenv("FEED2NOSTR_NSEC"), "Nostr nsec")
 	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays")
@@ -121,8 +121,11 @@ func main() {
 	}
 
 	funcMap := template.FuncMap{
-		"squeezeNewlines": func(s string) string {
-			return regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
+		"normalize": func(s string) string {
+			// Remove invisible Unicode characters and squeeze multiple newlines
+			s = regexp.MustCompile(`[\p{Cf}]`).ReplaceAllString(s, "")
+			s = regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
+			return s
 		},
 	}
 	t := template.Must(template.New("").Funcs(funcMap).Parse(format))
@@ -178,18 +181,20 @@ func main() {
 			continue
 		}
 
+		content := buf.String()
+
 		if re != nil {
-			if !re.MatchString(buf.String()) {
+			if !re.MatchString(content) {
 				continue
 			}
 		}
 
 		if skip {
-			log.Printf("%q", buf.String())
+			log.Printf("%q", content)
 			continue
 		}
 
-		err = postNostr(nsec, rs, item.Link, buf.String())
+		err = postNostr(nsec, rs, item.Link, content)
 		if err != nil {
 			log.Println(err)
 			continue
