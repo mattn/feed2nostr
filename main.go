@@ -155,6 +155,7 @@ func postNostr(nsec string, rs []string, link string, content string) error {
 	ev.Kind = nostr.KindTextNote
 	ev.Tags = nostr.Tags{}
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"proxy", link, "rss"})
+	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"client", name})
 
 	for _, h := range extractHashtags(ev.Content) {
 		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"t", h})
