@@ -20,6 +20,7 @@ import (
 	"github.com/nbd-wtf/go-nostr/nip19"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
+	"golang.org/x/net/html"
 )
 
 const name = "feed2nostr"
@@ -34,6 +35,103 @@ type Feed2Nostr struct {
 	Feed      string    `bun:"feed,pk,notnull" json:"feed"`
 	GUID      string    `bun:"guid,pk,notnull" json:"guid"`
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
+}
+
+var hashtagRE = regexp.MustCompile(`#[^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+`)
+
+func extractHashtags(s string) []string {
+	matches := hashtagRE.FindAllStringSubmatchIndex(s, -1)
+	tags := make([]string, 0, len(matches))
+	for _, m := range matches {
+		tags = append(tags, s[m[0]+1:m[1]])
+	}
+	return tags
+}
+
+func parseRelays(s string) []string {
+	var rs []string
+	for _, r := range strings.Split(s, ",") {
+		r = strings.TrimSpace(r)
+		if r != "" {
+			rs = append(rs, r)
+		}
+	}
+	return rs
+}
+
+func normalize(s string) string {
+	// Remove invisible Unicode characters and squeeze multiple newlines
+	s = regexp.MustCompile(`[\p{Cf}]`).ReplaceAllString(s, "")
+	s = regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
+	return s
+}
+
+func attrValue(z *html.Tokenizer, name string) string {
+	for {
+		k, v, more := z.TagAttr()
+		if string(k) == name {
+			return string(v)
+		}
+		if !more {
+			return ""
+		}
+	}
+}
+
+func htmlToText(s string) string {
+	z := html.NewTokenizer(strings.NewReader(s))
+	var b strings.Builder
+	var hrefs []string
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		switch tt {
+		case html.TextToken:
+			b.Write(z.Text())
+		case html.StartTagToken, html.SelfClosingTagToken:
+			tn, hasAttr := z.TagName()
+			switch string(tn) {
+			case "br", "p", "div", "li":
+				b.WriteString("\n")
+			case "img":
+				if hasAttr {
+					if src := attrValue(z, "src"); src != "" {
+						b.WriteString("\n")
+						b.WriteString(src)
+						b.WriteString("\n")
+					}
+				}
+			case "a":
+				href := ""
+				if hasAttr {
+					href = attrValue(z, "href")
+				}
+				if tt == html.SelfClosingTagToken {
+					if href != "" {
+						b.WriteString(" ")
+						b.WriteString(href)
+						b.WriteString(" ")
+					}
+				} else {
+					hrefs = append(hrefs, href)
+				}
+			}
+		case html.EndTagToken:
+			tn, _ := z.TagName()
+			if string(tn) == "a" && len(hrefs) > 0 {
+				href := hrefs[len(hrefs)-1]
+				hrefs = hrefs[:len(hrefs)-1]
+				if href != "" {
+					b.WriteString(" ")
+					b.WriteString(href)
+					b.WriteString(" ")
+				}
+			}
+		}
+	}
+	return b.String()
 }
 
 func postNostr(nsec string, rs []string, link string, content string) error {
@@ -58,9 +156,8 @@ func postNostr(nsec string, rs []string, link string, content string) error {
 	ev.Tags = nostr.Tags{}
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"proxy", link, "rss"})
 
-	for _, m := range regexp.MustCompile(`#[^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+`).FindAllStringSubmatchIndex(ev.Content, -1) {
-		hashtag := nostr.Tag{"t", ev.Content[m[0]+1 : m[1]]}
-		ev.Tags = ev.Tags.AppendUnique(hashtag)
+	for _, h := range extractHashtags(ev.Content) {
+		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"t", h})
 	}
 
 	ev.Sign(sk)
@@ -121,12 +218,8 @@ func main() {
 	}
 
 	funcMap := template.FuncMap{
-		"normalize": func(s string) string {
-			// Remove invisible Unicode characters and squeeze multiple newlines
-			s = regexp.MustCompile(`[\p{Cf}]`).ReplaceAllString(s, "")
-			s = regexp.MustCompile(`\n\n+`).ReplaceAllString(s, "\n")
-			return s
-		},
+		"normalize": normalize,
+		"text":      htmlToText,
 	}
 	t := template.Must(template.New("").Funcs(funcMap).Parse(format))
 
@@ -144,9 +237,7 @@ func main() {
 		return
 	}
 
-	for _, r := range strings.Split(relays, ",") {
-		rs = append(rs, strings.TrimSpace(r))
-	}
+	rs = parseRelays(relays)
 	if len(rs) == 0 {
 		log.Fatal("must specify relays")
 	}
