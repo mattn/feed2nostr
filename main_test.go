@@ -21,6 +21,8 @@ func TestExtractHashtags(t *testing.T) {
 		{"japanese", "こんにちは #日本語 タグ", []string{"日本語"}},
 		{"stops at punctuation", "see #tag, then #next.", []string{"tag", "next"}},
 		{"stops at space", "#one #two", []string{"one", "two"}},
+		{"ignores url fragments", "see https://example.com/post#section #tag", []string{"tag"}},
+		{"ignores mid-word hash", "word#part #tag", []string{"tag"}},
 		{"hash only", "#", []string{}},
 		{"empty", "", []string{}},
 	}

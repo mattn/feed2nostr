@@ -37,13 +37,13 @@ type Feed2Nostr struct {
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
 }
 
-var hashtagRE = regexp.MustCompile(`#[^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+`)
+var hashtagRE = regexp.MustCompile(`(^|\s)#([^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+)`)
 
 func extractHashtags(s string) []string {
-	matches := hashtagRE.FindAllStringSubmatchIndex(s, -1)
+	matches := hashtagRE.FindAllStringSubmatch(s, -1)
 	tags := make([]string, 0, len(matches))
 	for _, m := range matches {
-		tags = append(tags, s[m[0]+1:m[1]])
+		tags = append(tags, m[2])
 	}
 	return tags
 }
