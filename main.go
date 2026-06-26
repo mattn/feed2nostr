@@ -289,6 +289,9 @@ func main() {
 		err = postNostr(nsec, rs, item.Link, content)
 		if err != nil {
 			log.Println(err)
+			if _, deleteErr := bundb.NewDelete().Model(&fi).WherePK().Exec(context.Background()); deleteErr != nil {
+				log.Println(deleteErr)
+			}
 			continue
 		}
 	}
