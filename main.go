@@ -170,7 +170,9 @@ func postNostr(nsec string, rs []string, link string, content string) error {
 		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"t", h})
 	}
 
-	ev.Sign(sk)
+	if err := ev.Sign(sk); err != nil {
+		return err
+	}
 
 	success := 0
 	ctx := context.Background()
