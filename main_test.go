@@ -3,6 +3,8 @@ package main
 import (
 	"reflect"
 	"testing"
+
+	"github.com/mmcdole/gofeed"
 )
 
 func TestExtractHashtags(t *testing.T) {
@@ -51,6 +53,33 @@ func TestParseRelays(t *testing.T) {
 			got := parseRelays(tt.in)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("parseRelays(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestItemGUID(t *testing.T) {
+	tests := []struct {
+		name string
+		item *gofeed.Item
+		want string
+	}{
+		{
+			name: "uses guid when present",
+			item: &gofeed.Item{GUID: "guid-1", Link: "https://example.com/post"},
+			want: "guid-1",
+		},
+		{
+			name: "falls back to link when guid is empty",
+			item: &gofeed.Item{Link: "https://example.com/post"},
+			want: "https://example.com/post",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := itemGUID(tt.item)
+			if got != tt.want {
+				t.Errorf("itemGUID(%+v) = %q, want %q", tt.item, got, tt.want)
 			}
 		})
 	}
