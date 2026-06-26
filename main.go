@@ -144,8 +144,10 @@ func htmlToText(s string) string {
 func postNostr(nsec string, rs []string, link string, content string) error {
 	ev := nostr.Event{}
 	var sk string
-	if _, s, err := nip19.Decode(nsec); err != nil {
+	if prefix, s, err := nip19.Decode(nsec); err != nil {
 		return err
+	} else if prefix != "nsec" {
+		return fmt.Errorf("expected nsec private key, got %s", prefix)
 	} else {
 		sk = s.(string)
 	}
