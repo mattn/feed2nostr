@@ -59,6 +59,13 @@ func parseRelays(s string) []string {
 	return rs
 }
 
+func itemGUID(item *gofeed.Item) string {
+	if item.GUID != "" {
+		return item.GUID
+	}
+	return item.Link
+}
+
 func normalize(s string) string {
 	// Remove invisible Unicode characters and squeeze multiple newlines
 	s = regexp.MustCompile(`[\p{Cf}]`).ReplaceAllString(s, "")
@@ -256,7 +263,7 @@ func main() {
 
 		fi := Feed2Nostr{
 			Feed: feedURL,
-			GUID: item.GUID,
+			GUID: itemGUID(item),
 		}
 		_, err := bundb.NewInsert().Model(&fi).Exec(context.Background())
 		if err != nil {
