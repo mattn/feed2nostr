@@ -2,9 +2,11 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mmcdole/gofeed"
+	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
 func TestExtractHashtags(t *testing.T) {
@@ -171,5 +173,20 @@ func TestHtmlToText(t *testing.T) {
 				t.Errorf("htmlToText(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPostNostrRejectsNonNsecKeys(t *testing.T) {
+	nprofile, err := nip19.EncodeProfile("3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = postNostr(nprofile, nil, "https://example.com/post", "content")
+	if err == nil {
+		t.Fatal("postNostr returned nil error for nprofile key")
+	}
+	if !strings.Contains(err.Error(), "expected nsec private key") {
+		t.Fatalf("postNostr error = %q, want expected nsec private key", err)
 	}
 }
