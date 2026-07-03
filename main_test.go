@@ -138,6 +138,11 @@ func TestHtmlToText(t *testing.T) {
 			want: "click https://example.com ",
 		},
 		{
+			name: "a text same as href not duplicated",
+			in:   `<a href="https://example.com/">https://example.com/</a>`,
+			want: "https://example.com/",
+		},
+		{
 			name: "br becomes newline",
 			in:   "a<br>b",
 			want: "a\nb",

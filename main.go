@@ -88,7 +88,11 @@ func attrValue(z *html.Tokenizer, name string) string {
 func htmlToText(s string) string {
 	z := html.NewTokenizer(strings.NewReader(s))
 	var b strings.Builder
-	var hrefs []string
+	type anchor struct {
+		href string
+		pos  int
+	}
+	var anchors []anchor
 	for {
 		tt := z.Next()
 		if tt == html.ErrorToken {
@@ -122,17 +126,19 @@ func htmlToText(s string) string {
 						b.WriteString(" ")
 					}
 				} else {
-					hrefs = append(hrefs, href)
+					anchors = append(anchors, anchor{href: href, pos: b.Len()})
 				}
 			}
 		case html.EndTagToken:
 			tn, _ := z.TagName()
-			if string(tn) == "a" && len(hrefs) > 0 {
-				href := hrefs[len(hrefs)-1]
-				hrefs = hrefs[:len(hrefs)-1]
-				if href != "" {
+			if string(tn) == "a" && len(anchors) > 0 {
+				a := anchors[len(anchors)-1]
+				anchors = anchors[:len(anchors)-1]
+				// Skip appending the href when the anchor text is already
+				// the same URL, to avoid emitting the link twice.
+				if a.href != "" && strings.TrimSpace(b.String()[a.pos:]) != a.href {
 					b.WriteString(" ")
-					b.WriteString(href)
+					b.WriteString(a.href)
 					b.WriteString(" ")
 				}
 			}
