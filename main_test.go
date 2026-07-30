@@ -43,14 +43,39 @@ func TestParseRelays(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
-		want []string
+		want []relayOption
 	}{
-		{"single", "wss://relay.example.com", []string{"wss://relay.example.com"}},
-		{"multiple", "wss://a.com,wss://b.com", []string{"wss://a.com", "wss://b.com"}},
-		{"with spaces", " wss://a.com , wss://b.com ", []string{"wss://a.com", "wss://b.com"}},
-		{"empty entries skipped", "wss://a.com,,wss://b.com", []string{"wss://a.com", "wss://b.com"}},
+		{"single", "wss://relay.example.com", []relayOption{{URL: "wss://relay.example.com"}}},
+		{"multiple", "wss://a.com,wss://b.com", []relayOption{{URL: "wss://a.com"}, {URL: "wss://b.com"}}},
+		{"with spaces", " wss://a.com , wss://b.com ", []relayOption{{URL: "wss://a.com"}, {URL: "wss://b.com"}}},
+		{"empty entries skipped", "wss://a.com,,wss://b.com", []relayOption{{URL: "wss://a.com"}, {URL: "wss://b.com"}}},
 		{"empty string", "", nil},
 		{"only commas and spaces", " , , ", nil},
+		{
+			"auth and group",
+			"wss://vim-jp.communities.buzz.xyz?auth=true&group=xxx",
+			[]relayOption{{URL: "wss://vim-jp.communities.buzz.xyz", Auth: true, Group: "xxx"}},
+		},
+		{
+			"group only",
+			"wss://a.com?group=yyy",
+			[]relayOption{{URL: "wss://a.com", Group: "yyy"}},
+		},
+		{
+			"auth false",
+			"wss://a.com?auth=false",
+			[]relayOption{{URL: "wss://a.com"}},
+		},
+		{
+			"mixed plain and group",
+			"wss://a.com,wss://b.com?auth=1&group=zzz",
+			[]relayOption{{URL: "wss://a.com"}, {URL: "wss://b.com", Auth: true, Group: "zzz"}},
+		},
+		{
+			"unrelated query params kept",
+			"wss://a.com?auth=true&foo=bar",
+			[]relayOption{{URL: "wss://a.com?foo=bar", Auth: true}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
