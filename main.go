@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -48,13 +50,35 @@ func extractHashtags(s string) []string {
 	return tags
 }
 
-func parseRelays(s string) []string {
-	var rs []string
+// relayOption is a relay URL with per-relay options parsed from its query
+// string, e.g. wss://example.communities.buzz.xyz?auth=true&group=xxx
+type relayOption struct {
+	URL   string
+	Auth  bool   // authenticate with NIP-42 before publishing
+	Group string // NIP-29 group id: post as kind 9 with an "h" tag
+}
+
+func parseRelays(s string) []relayOption {
+	var rs []relayOption
 	for _, r := range strings.Split(s, ",") {
 		r = strings.TrimSpace(r)
-		if r != "" {
-			rs = append(rs, r)
+		if r == "" {
+			continue
 		}
+		u, err := url.Parse(r)
+		if err != nil {
+			rs = append(rs, relayOption{URL: r})
+			continue
+		}
+		q := u.Query()
+		opt := relayOption{}
+		opt.Auth, _ = strconv.ParseBool(q.Get("auth"))
+		opt.Group = q.Get("group")
+		q.Del("auth")
+		q.Del("group")
+		u.RawQuery = q.Encode()
+		opt.URL = u.String()
+		rs = append(rs, opt)
 	}
 	return rs
 }
@@ -147,28 +171,21 @@ func htmlToText(s string) string {
 	return b.String()
 }
 
-func postNostr(nsec string, rs []string, link string, content string) error {
+// buildEvent constructs and signs the event for one relay configuration. A
+// plain relay gets a kind 1 note; a relay with a group gets a kind 9 NIP-29
+// group message carrying the group id in the "h" tag.
+func buildEvent(sk string, pub string, link string, content string, group string) (*nostr.Event, error) {
 	ev := nostr.Event{}
-	var sk string
-	if prefix, s, err := nip19.Decode(nsec); err != nil {
-		return err
-	} else if prefix != "nsec" {
-		return fmt.Errorf("expected nsec private key, got %s", prefix)
-	} else {
-		sk = s.(string)
-	}
-	if pub, err := nostr.GetPublicKey(sk); err == nil {
-		if _, err := nip19.EncodePublicKey(pub); err != nil {
-			return err
-		}
-		ev.PubKey = pub
-	} else {
-		return err
-	}
+	ev.PubKey = pub
 	ev.Content = content
 	ev.CreatedAt = nostr.Now()
-	ev.Kind = nostr.KindTextNote
 	ev.Tags = nostr.Tags{}
+	if group != "" {
+		ev.Kind = nostr.KindSimpleGroupChatMessage
+		ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"h", group})
+	} else {
+		ev.Kind = nostr.KindTextNote
+	}
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"proxy", link, "rss"})
 	ev.Tags = ev.Tags.AppendUnique(nostr.Tag{"client", name})
 
@@ -177,18 +194,60 @@ func postNostr(nsec string, rs []string, link string, content string) error {
 	}
 
 	if err := ev.Sign(sk); err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+func postNostr(nsec string, rs []relayOption, link string, content string) error {
+	var sk string
+	if prefix, s, err := nip19.Decode(nsec); err != nil {
+		return err
+	} else if prefix != "nsec" {
+		return fmt.Errorf("expected nsec private key, got %s", prefix)
+	} else {
+		sk = s.(string)
+	}
+	pub, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		return err
+	}
+	if _, err := nip19.EncodePublicKey(pub); err != nil {
 		return err
 	}
 
+	events := map[string]*nostr.Event{}
 	success := 0
 	ctx := context.Background()
 	for _, r := range rs {
-		relay, err := nostr.RelayConnect(context.Background(), r)
+		ev, ok := events[r.Group]
+		if !ok {
+			ev, err = buildEvent(sk, pub, link, content, r.Group)
+			if err != nil {
+				return err
+			}
+			events[r.Group] = ev
+		}
+		relay, err := nostr.RelayConnect(context.Background(), r.URL)
 		if err != nil {
-			log.Printf("%v: %v", r, err)
+			log.Printf("%v: %v", r.URL, err)
 			continue
 		}
-		err = relay.Publish(ctx, ev)
+		if r.Auth {
+			// The relay sends its NIP-42 challenge unsolicited right after the
+			// connection opens; replying before it lands sends an empty
+			// challenge, which some relays treat as a hard failure.
+			time.Sleep(time.Second)
+			actx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			err = relay.Auth(actx, func(aev *nostr.Event) error {
+				return aev.Sign(sk)
+			})
+			cancel()
+			if err != nil {
+				log.Printf("%v: auth: %v", r.URL, err)
+			}
+		}
+		err = relay.Publish(ctx, *ev)
 		relay.Close()
 		if err == nil {
 			success++
@@ -209,7 +268,7 @@ func main() {
 	var re *regexp.Regexp
 	var nsec string
 	var relays string
-	var rs []string
+	var rs []relayOption
 	var ver bool
 
 	flag.BoolVar(&skip, "skip", false, "Skip post")
@@ -218,7 +277,7 @@ func main() {
 	flag.StringVar(&format, "format", "{{.Title | normalize}}\n{{.Link}}", "Post Format")
 	flag.StringVar(&pattern, "pattern", "", "Match pattern")
 	flag.StringVar(&nsec, "nsec", os.Getenv("FEED2NOSTR_NSEC"), "Nostr nsec")
-	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays")
+	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays (per-relay options as query params: ?auth=true&group=xxx)")
 	flag.BoolVar(&ver, "v", false, "show version")
 	flag.Parse()
 
