@@ -1,4 +1,5 @@
 BIN := feed2nostr
+VERSION_PATTERN := const version = "(\d+\.\d+\.\d+)"
 VERSION := $$(make -s show-version)
 CURRENT_REVISION := $(shell git rev-parse --short HEAD)
 BUILD_LDFLAGS := "-s -w -X main.revision=$(CURRENT_REVISION)"
@@ -17,11 +18,11 @@ install:
 	go install -ldflags=$(BUILD_LDFLAGS) .
 
 .PHONY: show-version
-show-version: $(GOBIN)/gobump
-	gobump show -r .
+show-version: $(GOBIN)/bump
+	@bump show -f main.go -p '$(VERSION_PATTERN)'
 
-$(GOBIN)/gobump:
-	go install github.com/x-motemen/gobump/cmd/gobump@latest
+$(GOBIN)/bump:
+	go install github.com/mattn/bump@latest
 
 .PHONY: cross
 cross: $(GOBIN)/goxz
@@ -40,14 +41,14 @@ clean:
 	go clean
 
 .PHONY: bump
-bump: $(GOBIN)/gobump
+bump: $(GOBIN)/bump
 ifneq ($(shell git status --porcelain),)
 	$(error git workspace is dirty)
 endif
 ifneq ($(shell git rev-parse --abbrev-ref HEAD),main)
 	$(error current branch is not main)
 endif
-	@gobump up -w .
+	@bump up -f main.go -p '$(VERSION_PATTERN)' -w
 	git commit -am "Bump up version to $(VERSION)"
 	git tag "v$(VERSION)"
 	git push origin main
