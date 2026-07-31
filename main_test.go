@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mmcdole/gofeed"
+	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
 
@@ -75,6 +76,11 @@ func TestParseRelays(t *testing.T) {
 			"unrelated query params kept",
 			"wss://a.com?auth=true&foo=bar",
 			[]relayOption{{URL: "wss://a.com?foo=bar", Auth: true}},
+		},
+		{
+			"group name url-encoded",
+			"wss://a.com?auth=true&group=%23foo",
+			[]relayOption{{URL: "wss://a.com", Auth: true, Group: "#foo"}},
 		},
 	}
 	for _, tt := range tests {
@@ -220,5 +226,34 @@ func TestPostNostrRejectsNonNsecKeys(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "expected nsec private key") {
 		t.Fatalf("postNostr error = %q, want expected nsec private key", err)
+	}
+}
+
+func TestGroupMetadataID(t *testing.T) {
+	mk := func(createdAt int64, id, name string) *nostr.Event {
+		return &nostr.Event{
+			Kind:      nostr.KindSimpleGroupMetadata,
+			CreatedAt: nostr.Timestamp(createdAt),
+			Tags:      nostr.Tags{{"d", id}, {"name", name}},
+		}
+	}
+	evs := []*nostr.Event{
+		mk(100, "id-old", "foo"),
+		mk(200, "id-new", "foo"),
+		mk(300, "id-bar", "bar"),
+		{Kind: nostr.KindSimpleGroupMetadata, CreatedAt: 400, Tags: nostr.Tags{{"name", "noid"}}},
+	}
+
+	if got, err := groupMetadataID(evs, "foo"); err != nil || got != "id-new" {
+		t.Errorf("groupMetadataID(foo) = %q, %v, want id-new", got, err)
+	}
+	if got, err := groupMetadataID(evs, "bar"); err != nil || got != "id-bar" {
+		t.Errorf("groupMetadataID(bar) = %q, %v, want id-bar", got, err)
+	}
+	if _, err := groupMetadataID(evs, "missing"); err == nil {
+		t.Error("groupMetadataID(missing) should fail")
+	}
+	if _, err := groupMetadataID(evs, "noid"); err == nil {
+		t.Error("groupMetadataID(noid) should fail for metadata without d tag")
 	}
 }
