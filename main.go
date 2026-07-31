@@ -52,6 +52,8 @@ func extractHashtags(s string) []string {
 
 // relayOption is a relay URL with per-relay options parsed from its query
 // string, e.g. wss://example.communities.buzz.xyz?auth=true&group=xxx
+// A group may also be referenced by name as "#foo" (URL-encoded as group=%23foo),
+// resolved via the relay's kind 39000 metadata before posting.
 type relayOption struct {
 	URL   string
 	Auth  bool   // authenticate with NIP-42 before publishing
@@ -171,6 +173,98 @@ func htmlToText(s string) string {
 	return b.String()
 }
 
+func decodeNsec(nsec string) (string, error) {
+	prefix, s, err := nip19.Decode(nsec)
+	if err != nil {
+		return "", err
+	}
+	if prefix != "nsec" {
+		return "", fmt.Errorf("expected nsec private key, got %s", prefix)
+	}
+	return s.(string), nil
+}
+
+// authRelay performs NIP-42 authentication. The relay sends its challenge
+// unsolicited right after the connection opens; replying before it lands sends
+// an empty challenge, which some relays treat as a hard failure.
+func authRelay(ctx context.Context, relay *nostr.Relay, sk string) error {
+	time.Sleep(time.Second)
+	actx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return relay.Auth(actx, func(aev *nostr.Event) error {
+		return aev.Sign(sk)
+	})
+}
+
+// groupMetadataID returns the group id ("d" tag) of the newest kind 39000
+// event whose name tag matches name.
+func groupMetadataID(evs []*nostr.Event, name string) (string, error) {
+	var best *nostr.Event
+	var bestID string
+	for _, e := range evs {
+		var id, n string
+		for _, tag := range e.Tags {
+			if len(tag) < 2 {
+				continue
+			}
+			switch tag[0] {
+			case "d":
+				id = tag[1]
+			case "name":
+				n = tag[1]
+			}
+		}
+		if n == name && id != "" {
+			if best == nil || e.CreatedAt > best.CreatedAt {
+				best = e
+				bestID = id
+			}
+		}
+	}
+	if best == nil {
+		return "", fmt.Errorf("no group named %q found", name)
+	}
+	return bestID, nil
+}
+
+// resolveGroups replaces "#name" group references with their group ids looked
+// up via the relay's kind 39000 metadata.
+func resolveGroups(nsec string, rs []relayOption) error {
+	sk, err := decodeNsec(nsec)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	for i := range rs {
+		if !strings.HasPrefix(rs[i].Group, "#") {
+			continue
+		}
+		name := strings.TrimPrefix(rs[i].Group, "#")
+		relay, err := nostr.RelayConnect(ctx, rs[i].URL)
+		if err != nil {
+			return fmt.Errorf("%v: %w", rs[i].URL, err)
+		}
+		if rs[i].Auth {
+			if err := authRelay(ctx, relay, sk); err != nil {
+				log.Printf("%v: auth: %v", rs[i].URL, err)
+			}
+		}
+		evs, err := relay.QuerySync(ctx, nostr.Filter{
+			Kinds: []int{nostr.KindSimpleGroupMetadata},
+		})
+		relay.Close()
+		if err != nil {
+			return fmt.Errorf("%v: %w", rs[i].URL, err)
+		}
+		id, err := groupMetadataID(evs, name)
+		if err != nil {
+			return fmt.Errorf("%v: %w", rs[i].URL, err)
+		}
+		rs[i].Group = id
+	}
+	return nil
+}
+
 // buildEvent constructs and signs the event for one relay configuration. A
 // plain relay gets a kind 1 note; a relay with a group gets a kind 9 NIP-29
 // group message carrying the group id in the "h" tag.
@@ -200,13 +294,9 @@ func buildEvent(sk string, pub string, link string, content string, group string
 }
 
 func postNostr(nsec string, rs []relayOption, link string, content string) error {
-	var sk string
-	if prefix, s, err := nip19.Decode(nsec); err != nil {
+	sk, err := decodeNsec(nsec)
+	if err != nil {
 		return err
-	} else if prefix != "nsec" {
-		return fmt.Errorf("expected nsec private key, got %s", prefix)
-	} else {
-		sk = s.(string)
 	}
 	pub, err := nostr.GetPublicKey(sk)
 	if err != nil {
@@ -234,16 +324,7 @@ func postNostr(nsec string, rs []relayOption, link string, content string) error
 			continue
 		}
 		if r.Auth {
-			// The relay sends its NIP-42 challenge unsolicited right after the
-			// connection opens; replying before it lands sends an empty
-			// challenge, which some relays treat as a hard failure.
-			time.Sleep(time.Second)
-			actx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			err = relay.Auth(actx, func(aev *nostr.Event) error {
-				return aev.Sign(sk)
-			})
-			cancel()
-			if err != nil {
+			if err := authRelay(ctx, relay, sk); err != nil {
 				log.Printf("%v: auth: %v", r.URL, err)
 			}
 		}
@@ -277,7 +358,7 @@ func main() {
 	flag.StringVar(&format, "format", "{{.Title | normalize}}\n{{.Link}}", "Post Format")
 	flag.StringVar(&pattern, "pattern", "", "Match pattern")
 	flag.StringVar(&nsec, "nsec", os.Getenv("FEED2NOSTR_NSEC"), "Nostr nsec")
-	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays (per-relay options as query params: ?auth=true&group=xxx)")
+	flag.StringVar(&relays, "relays", os.Getenv("FEED2NOSTR_RELAYS"), "Nostr relays (per-relay options as query params: ?auth=true&group=xxx or group=%23name)")
 	flag.BoolVar(&ver, "v", false, "show version")
 	flag.Parse()
 
@@ -317,6 +398,11 @@ func main() {
 	rs = parseRelays(relays)
 	if len(rs) == 0 {
 		log.Fatal("must specify relays")
+	}
+	if !skip {
+		if err := resolveGroups(nsec, rs); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	feed, err := gofeed.NewParser().ParseURL(feedURL)
