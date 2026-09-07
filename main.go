@@ -3,13 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
-	"os"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -29,6 +31,13 @@ const name = "feed2nostr"
 
 const version = "0.0.22"
 
+// kinds used by -podcast: a replaceable event describing the show and one
+// event per episode carrying the audio url.
+const (
+	kindPodcastEpisode = 54
+	kindPodcastShow    = 10154
+)
+
 var revision = "HEAD"
 
 type Feed2Nostr struct {
@@ -37,6 +46,28 @@ type Feed2Nostr struct {
 	Feed      string    `bun:"feed,pk,notnull" json:"feed"`
 	GUID      string    `bun:"guid,pk,notnull" json:"guid"`
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
+}
+
+// Feed2NostrPodcast tracks which items have been published as podcast episodes.
+// It is kept apart from Feed2Nostr so that turning -podcast on for a feed that
+// has been posting kind 1 notes for a while still publishes the episodes that
+// are in the feed, instead of considering them all done.
+type Feed2NostrPodcast struct {
+	bun.BaseModel `bun:"table:feed2nostr_podcast,alias:p"`
+
+	Feed      string    `bun:"feed,pk,notnull" json:"feed"`
+	GUID      string    `bun:"guid,pk,notnull" json:"guid"`
+	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
+}
+
+// Feed2NostrPodcastShow remembers the last published show description so the
+// replaceable kind 10154 event is only sent again when the feed changed it.
+type Feed2NostrPodcastShow struct {
+	bun.BaseModel `bun:"table:feed2nostr_podcast_show,alias:ps"`
+
+	Feed      string    `bun:"feed,pk,notnull" json:"feed"`
+	Hash      string    `bun:"hash,notnull" json:"hash"`
+	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp" json:"updated_at"`
 }
 
 var hashtagRE = regexp.MustCompile(`(^|\s)#([^\s!@#$%^&*()=+.\/,\[{\]};:'"?><]+)`)
@@ -342,6 +373,7 @@ func postNostr(nsec string, rs []relayOption, link string, content string) error
 
 func main() {
 	var skip bool
+	var podcast bool
 	var dsn string
 	var feedURL string
 	var format string
@@ -353,6 +385,7 @@ func main() {
 	var ver bool
 
 	flag.BoolVar(&skip, "skip", false, "Skip post")
+	flag.BoolVar(&podcast, "podcast", false, "Also publish the feed as a podcast (kind 10154 and kind 54)")
 	flag.StringVar(&dsn, "dsn", os.Getenv("FEED2NOSTR_DSN"), "Database source")
 	flag.StringVar(&feedURL, "feed", "", "Feed URL")
 	flag.StringVar(&format, "format", "{{.Title | normalize}}\n{{.Link}}", "Post Format")
@@ -395,6 +428,15 @@ func main() {
 		return
 	}
 
+	if podcast {
+		for _, model := range []any{(*Feed2NostrPodcast)(nil), (*Feed2NostrPodcastShow)(nil)} {
+			if _, err := bundb.NewCreateTable().Model(model).IfNotExists().Exec(context.Background()); err != nil {
+				log.Println(err)
+				return
+			}
+		}
+	}
+
 	rs = parseRelays(relays)
 	if len(rs) == 0 {
 		log.Fatal("must specify relays")
@@ -409,6 +451,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return
+	}
+
+	if podcast {
+		postPodcast(context.Background(), bundb, nsec, rs, feedURL, feed, skip)
 	}
 
 	for _, item := range feed.Items {
@@ -455,6 +501,224 @@ func main() {
 				log.Println(deleteErr)
 			}
 			continue
+		}
+	}
+}
+
+// podcastShowEvent builds the replaceable kind 10154 event that describes the
+// show itself, from the channel level fields of the feed.
+func podcastShowEvent(sk string, pub string, feed *gofeed.Feed) (*nostr.Event, error) {
+	ev := nostr.Event{
+		PubKey:    pub,
+		Kind:      kindPodcastShow,
+		CreatedAt: nostr.Now(),
+		Content:   "",
+		Tags:      nostr.Tags{nostr.Tag{"title", strings.TrimSpace(feed.Title)}},
+	}
+
+	if desc := normalize(htmlToText(feed.Description)); desc != "" {
+		ev.Tags = append(ev.Tags, nostr.Tag{"description", desc})
+	}
+	if feed.Image != nil && feed.Image.URL != "" {
+		ev.Tags = append(ev.Tags, nostr.Tag{"image", feed.Image.URL})
+	} else if feed.ITunesExt != nil && feed.ITunesExt.Image != "" {
+		ev.Tags = append(ev.Tags, nostr.Tag{"image", feed.ITunesExt.Image})
+	}
+	if feed.Link != "" {
+		ev.Tags = append(ev.Tags, nostr.Tag{"website", feed.Link})
+	}
+	ev.Tags = append(ev.Tags, nostr.Tag{"client", name})
+
+	if err := ev.Sign(sk); err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+// podcastEpisodeEvent builds a kind 54 event for one feed item. It returns nil
+// when the item carries no audio, since there would be nothing to play.
+func podcastEpisodeEvent(sk string, pub string, item *gofeed.Item) (*nostr.Event, error) {
+	var enclosure *gofeed.Enclosure
+	for _, e := range item.Enclosures {
+		if e != nil && e.URL != "" {
+			enclosure = e
+			break
+		}
+	}
+	if enclosure == nil {
+		return nil, nil
+	}
+
+	audio := nostr.Tag{"audio", enclosure.URL}
+	if enclosure.Type != "" {
+		audio = append(audio, enclosure.Type)
+	}
+
+	ev := nostr.Event{
+		PubKey:    pub,
+		Kind:      kindPodcastEpisode,
+		CreatedAt: nostr.Now(),
+		Content:   normalize(htmlToText(item.Description)),
+		Tags: nostr.Tags{
+			nostr.Tag{"title", strings.TrimSpace(item.Title)},
+			audio,
+		},
+	}
+
+	if guid := itemGUID(item); guid != "" {
+		// NIP-73, so the episode can be matched back to the feed item
+		ev.Tags = append(ev.Tags, nostr.Tag{"i", "podcast:item:guid:" + guid})
+	}
+	if item.ITunesExt != nil {
+		if seconds := durationSeconds(item.ITunesExt.Duration); seconds > 0 {
+			ev.Tags = append(ev.Tags, nostr.Tag{"duration", strconv.Itoa(seconds)})
+		}
+	}
+	if item.Link != "" {
+		ev.Tags = append(ev.Tags, nostr.Tag{"r", item.Link})
+	}
+	ev.Tags = append(ev.Tags, nostr.Tag{"client", name})
+
+	if item.PublishedParsed != nil {
+		ev.CreatedAt = nostr.Timestamp(item.PublishedParsed.Unix())
+	}
+
+	if err := ev.Sign(sk); err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+// durationSeconds parses the itunes:duration field, which is either a number of
+// seconds or a [hh:]mm:ss timestamp.
+func durationSeconds(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) > 3 {
+		return 0
+	}
+	total := 0
+	for _, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return 0
+		}
+		total = total*60 + n
+	}
+	return total
+}
+
+// publishEvent sends an already built event to the relays. Relays configured
+// with a NIP-29 group are skipped: a group is a chat room, not a feed.
+func publishEvent(sk string, rs []relayOption, ev *nostr.Event) error {
+	ctx := context.Background()
+	success := 0
+	for _, r := range rs {
+		if r.Group != "" {
+			continue
+		}
+		relay, err := nostr.RelayConnect(ctx, r.URL)
+		if err != nil {
+			log.Printf("%v: %v", r.URL, err)
+			continue
+		}
+		if r.Auth {
+			if err := authRelay(ctx, relay, sk); err != nil {
+				log.Printf("%v: auth: %v", r.URL, err)
+			}
+		}
+		err = relay.Publish(ctx, *ev)
+		relay.Close()
+		if err == nil {
+			success++
+		} else {
+			log.Printf("%v: %v", r.URL, err)
+		}
+	}
+	if success == 0 {
+		return errors.New("failed to publish")
+	}
+	return nil
+}
+
+// postPodcast publishes the show event when it changed and one kind 54 event
+// for each item that has not been published as an episode yet. Items are
+// handled oldest first so the episodes land in the order they were released.
+func postPodcast(ctx context.Context, bundb *bun.DB, nsec string, rs []relayOption, feedURL string, feed *gofeed.Feed, skip bool) {
+	sk, err := decodeNsec(nsec)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	pub, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	show, err := podcastShowEvent(sk, pub, feed)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%v%v", show.Tags, show.Content)))
+	want := hex.EncodeToString(hash[:])
+
+	var stored Feed2NostrPodcastShow
+	err = bundb.NewSelect().Model(&stored).Where("feed = ?", feedURL).Scan(ctx)
+	if err != nil || stored.Hash != want {
+		if skip {
+			log.Printf("%v", show)
+		} else if err := publishEvent(sk, rs, show); err != nil {
+			log.Println(err)
+		} else {
+			record := Feed2NostrPodcastShow{Feed: feedURL, Hash: want, UpdatedAt: time.Now()}
+			if _, err := bundb.NewInsert().Model(&record).
+				On("CONFLICT (feed) DO UPDATE").
+				Set("hash = EXCLUDED.hash, updated_at = EXCLUDED.updated_at").
+				Exec(ctx); err != nil {
+				log.Println(err)
+			}
+		}
+	}
+
+	for i := len(feed.Items) - 1; i >= 0; i-- {
+		item := feed.Items[i]
+		if item == nil {
+			continue
+		}
+
+		pi := Feed2NostrPodcast{Feed: feedURL, GUID: itemGUID(item)}
+		if _, err := bundb.NewInsert().Model(&pi).Exec(ctx); err != nil {
+			if !strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
+				log.Println(err)
+			}
+			continue
+		}
+
+		ev, err := podcastEpisodeEvent(sk, pub, item)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		if ev == nil {
+			continue // no audio, nothing to publish
+		}
+
+		if skip {
+			log.Printf("%v", ev)
+			continue
+		}
+
+		if err := publishEvent(sk, rs, ev); err != nil {
+			log.Println(err)
+			if _, deleteErr := bundb.NewDelete().Model(&pi).WherePK().Exec(ctx); deleteErr != nil {
+				log.Println(deleteErr)
+			}
 		}
 	}
 }

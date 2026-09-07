@@ -4,8 +4,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mmcdole/gofeed"
+	"github.com/mmcdole/gofeed/extensions"
 	"github.com/nbd-wtf/go-nostr"
 	"github.com/nbd-wtf/go-nostr/nip19"
 )
@@ -255,5 +257,151 @@ func TestGroupMetadataID(t *testing.T) {
 	}
 	if _, err := groupMetadataID(evs, "noid"); err == nil {
 		t.Error("groupMetadataID(noid) should fail for metadata without d tag")
+	}
+}
+
+func TestDurationSeconds(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"seconds", "2320", 2320},
+		{"mm:ss", "38:40", 2320},
+		{"hh:mm:ss", "01:02:03", 3723},
+		{"padded", "00:38:40", 2320},
+		{"spaces", " 38:40 ", 2320},
+		{"empty", "", 0},
+		{"garbage", "about an hour", 0},
+		{"too many parts", "1:2:3:4", 0},
+		{"negative", "-5", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := durationSeconds(tt.in); got != tt.want {
+				t.Errorf("durationSeconds(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func tagValue(ev *nostr.Event, name string) string {
+	for _, tag := range ev.Tags {
+		if len(tag) >= 2 && tag[0] == name {
+			return tag[1]
+		}
+	}
+	return ""
+}
+
+func TestPodcastEpisodeEvent(t *testing.T) {
+	sk := nostr.GeneratePrivateKey()
+	pub, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	published := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	item := &gofeed.Item{
+		Title:           "#22　えっとだからその",
+		Description:     "<p>■トピック：部活</p><p>おたより募集中</p>",
+		Link:            "https://example.com/episodes/22",
+		GUID:            "f0470cca-0699-425d-89e9-a45eb67e0480",
+		PublishedParsed: &published,
+		Enclosures:      []*gofeed.Enclosure{{URL: "https://example.com/22.mp3", Type: "audio/mpeg"}},
+		ITunesExt:       &ext.ITunesItemExtension{Duration: "00:38:40"},
+	}
+
+	ev, err := podcastEpisodeEvent(sk, pub, item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev == nil {
+		t.Fatal("podcastEpisodeEvent() = nil, want an event")
+	}
+
+	if ev.Kind != kindPodcastEpisode {
+		t.Errorf("kind = %d, want %d", ev.Kind, kindPodcastEpisode)
+	}
+	if got := tagValue(ev, "title"); got != item.Title {
+		t.Errorf("title = %q, want %q", got, item.Title)
+	}
+	if got := tagValue(ev, "audio"); got != "https://example.com/22.mp3" {
+		t.Errorf("audio = %q, want the enclosure url", got)
+	}
+	if got := tagValue(ev, "i"); got != "podcast:item:guid:"+item.GUID {
+		t.Errorf("i = %q, want the nip73 guid", got)
+	}
+	if got := tagValue(ev, "duration"); got != "2320" {
+		t.Errorf("duration = %q, want 2320", got)
+	}
+	if got := tagValue(ev, "r"); got != item.Link {
+		t.Errorf("r = %q, want %q", got, item.Link)
+	}
+	if ev.CreatedAt != nostr.Timestamp(published.Unix()) {
+		t.Errorf("created_at = %d, want the pubDate %d", ev.CreatedAt, published.Unix())
+	}
+	if strings.Contains(ev.Content, "<p>") {
+		t.Errorf("content still has html: %q", ev.Content)
+	}
+	if !strings.Contains(ev.Content, "■トピック：部活") {
+		t.Errorf("content lost the description: %q", ev.Content)
+	}
+	if ok, err := ev.CheckSignature(); err != nil || !ok {
+		t.Errorf("signature does not verify: %v", err)
+	}
+}
+
+func TestPodcastEpisodeEventWithoutAudio(t *testing.T) {
+	sk := nostr.GeneratePrivateKey()
+	pub, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ev, err := podcastEpisodeEvent(sk, pub, &gofeed.Item{Title: "no audio"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev != nil {
+		t.Errorf("podcastEpisodeEvent() = %v, want nil for an item with no enclosure", ev)
+	}
+}
+
+func TestPodcastShowEvent(t *testing.T) {
+	sk := nostr.GeneratePrivateKey()
+	pub, err := nostr.GetPublicKey(sk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	feed := &gofeed.Feed{
+		Title:       "けだまメイズ",
+		Description: "<p>ゆるい会話を残していきます</p>",
+		Link:        "https://example.com/show",
+		ITunesExt:   &ext.ITunesFeedExtension{Image: "https://example.com/cover.jpg"},
+	}
+
+	ev, err := podcastShowEvent(sk, pub, feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Kind != kindPodcastShow {
+		t.Errorf("kind = %d, want %d", ev.Kind, kindPodcastShow)
+	}
+	if got := tagValue(ev, "title"); got != feed.Title {
+		t.Errorf("title = %q, want %q", got, feed.Title)
+	}
+	if got := tagValue(ev, "image"); got != "https://example.com/cover.jpg" {
+		t.Errorf("image = %q, want the itunes image", got)
+	}
+	if got := tagValue(ev, "website"); got != feed.Link {
+		t.Errorf("website = %q, want %q", got, feed.Link)
+	}
+	if got := tagValue(ev, "description"); strings.Contains(got, "<p>") {
+		t.Errorf("description still has html: %q", got)
+	}
+	if ok, err := ev.CheckSignature(); err != nil || !ok {
+		t.Errorf("signature does not verify: %v", err)
 	}
 }
