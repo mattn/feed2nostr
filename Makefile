@@ -56,7 +56,7 @@ endif
 
 .PHONY: bump-force
 bump-force: $(GOBIN)/bump
-	@bump up -f main.go -p '$(VERSION_PATTERN)' -w
+	@bump patch -f main.go -p '$(VERSION_PATTERN)' -w
 	git commit -am "Bump up version to $(VERSION)"
 	git tag "v$(VERSION)"
 	git push origin main
