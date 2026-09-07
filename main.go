@@ -29,7 +29,7 @@ import (
 
 const name = "feed2nostr"
 
-const version = "0.0.22"
+const version = "0.0.23"
 
 // kinds used by -podcast: a replaceable event describing the show and one
 // event per episode carrying the audio url.
